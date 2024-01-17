@@ -71,17 +71,17 @@ ui <- fluidPage(
       "ad"
     ),
     
-    
     selectInput(
-      "adlist",
-      "adOptions",
+      "downloadlist",
+      "downloadOptions",
       multiple = T,
       choices = c("Datensatz", "Bild1"),
       selected = NULL,
     ),
     
-    
     #Widgets setting Parameters for downstream Analysis  ----
+    ## Export name ----
+    textInput("export_name", "Set export name",  value = "test"),
     ## select if input convert NA to 0 or delete whole column----
     checkboxInput("na", "Convert NA to 0", value = TRUE),
     h3("PCA & NMDS"),
@@ -263,34 +263,38 @@ ui <- fluidPage(
   mainPanel(
     tabsetPanel(
       type = "tabs",
-      tabPanel("Data and Stats", 
-               DT::dataTableOutput("data"),
-               downloadButton("downloadData", "download Dataset"),
-               DT::dataTableOutput("stats_df"),
-               DT::dataTableOutput("settings_df"),
-               ),
       tabPanel("PCA", 
                plotOutput("PCA_plot"),
                downloadButton("download_PCA_pdf", "download PCA Plot as pdf"),
                plotOutput("PCA_diagnostics_plot"),
                downloadButton("download_PCA_diagnostics", "download PCA diagnostics Plot"),
                plotOutput("PCA_eli_area_barplot"),
-               downloadButton("PCA_ellipse_areas_barchart.pdf", "download PCA ellipse areas barplot"),
+               downloadButton("download_ellipse_bar", "download PCA ellipse areas barplot"),
                DT::dataTableOutput("PCA_eli_area_df"),
-               downloadButton("download_PCA_elli_areas_df","Download PCA ellipse areas Dataframe"),
-               plotOutput("pairwise_pca"),
-               plotOutput("loadings_plot1"),
-               plotOutput("loadings_plot2"),
+               downloadButton("download_ellipse_df","Download PCA ellipse areas Dataframe"),
+               plotOutput("PC1_relative_loadings"),
+               plotOutput("PCA_loadings"),
+               plotOutput("PC2_relative_loadings"),
+               DT::dataTableOutput("PCA_loadings_table"),
+               downloadButton("download_PCA_loadings_df", "download PCA loadings DF"),
+               plotOutput("pairwise_pca")
                ),
       tabPanel("NMDS", 
                plotOutput("NMDS"),
                plotOutput("NMDS_pairwise")
-               )
+               ),
+      tabPanel("Data and Stats", 
+               DT::dataTableOutput("data"),
+               downloadButton("downloadData", "download Dataset"),
+               DT::dataTableOutput("stats_df"),
+               DT::dataTableOutput("settings_df"),
+      )
     )
   )
 ))
 # Define server logic ----
 server <- shinyServer(function(input, output) {
+  shinyjs::useShinyjs()
   ## load data  ----
   df_raw <- reactive({
     req(input$data)
@@ -332,10 +336,11 @@ server <- shinyServer(function(input, output) {
   ## analytes  ----
   df_analytes <- reactive ({
     df <- df_NA()
-    Analyte_names <- as.vector(colnames(df)[3:ncol(df)])
-    Analyte_mapping <- as.data.frame(cbind(c(1:(ncol(df))),Analyte_names))
+    Analyte_names <- as.vector(colnames(df)[3:length(df)])
+    Analyte_mapping <- as.data.frame(cbind(c(1:(ncol(df)-2)),Analyte_names))
     rownames(Analyte_mapping) <- Analyte_mapping[,1]
     colnames(Analyte_mapping) <- c("R_script","Analyte")
+    print(Analyte_mapping)
     return(Analyte_mapping)
   })
   
@@ -436,6 +441,7 @@ server <- shinyServer(function(input, output) {
     data <- df_NA()
     data <- data[, colSums(data != 0) != 0]
     PCA_data <- PCA()
+    Export_name <- input$export_name
     sample.pca <- PCA_data$sample.pca
     sample.data <- PCA_data$sample.data
     sample.group <- PCA_data$sample.group
@@ -468,7 +474,6 @@ server <- shinyServer(function(input, output) {
     df_out$Sample <- sample.name
     
     number_of_groups <- as.numeric(length(unique(sample.group)))
-    
     # calculte centroids of groups
     centroids <- aggregate(cbind(PC1, PC2) ~ Group, df_out, mean)
     df_connect <-
@@ -563,7 +568,7 @@ server <- shinyServer(function(input, output) {
       g + theme(legend.direction = 'horizontal', legend.position = 'top')
     g <- g + theme_bw()
     g <-
-      g + ggtitle(paste("PCA of \n (Permanova (adonis) P-value =", stat_p, ")")) +
+      g + ggtitle(paste("PCA of",Export_name,"\n (Permanova (adonis) P-value =", stat_p, ")")) +
       xlab(paste(
         "PC 1 (Var. explained ",
         round(100 * variances_pca[1], 2),
@@ -729,8 +734,10 @@ server <- shinyServer(function(input, output) {
 
   ## PCA-ellipse-areas ----
   PCA_ellipse_areas <- reactive({
+    Export_name <- input$export_name
     # Get ellipse coordinates from plot and add group names
     pb <- ggplot_build(PCA_plot())
+    g <- PCA_plot()
     ellipse_data <- pb$data[[3]][c("fill","x","y")]
     ellipse_sample_groups <- as.data.frame(cbind(c(unique(ellipse_data$fill)),c(unique((g[["data"]][["Group"]])))), stringsAsFactors = FALSE)
     colnames(ellipse_sample_groups) <- c("fill","group")
@@ -805,7 +812,7 @@ server <- shinyServer(function(input, output) {
       observe({
         shinyjs::toggle("PCA_ellipse_areas_barchart.pdf", !is.null(input$data))
       })
-      output$PCA_ellipse_areas <- downloadHandler(
+      output$download_ellipse_bar <- downloadHandler(
         filename = function() {
           "PCA_ellipse_areas_barchart.pdf"
         },
@@ -822,7 +829,7 @@ server <- shinyServer(function(input, output) {
       observe({
         shinyjs::toggle("download_PCA_elli_areas_df", !is.null(input$data))
       })
-      output$downloadData <- downloadHandler(
+      output$download_ellipse_df <- downloadHandler(
         filename = function() {
           paste("ellipse_areas", Sys.Date(), ".csv")
         },
@@ -831,7 +838,7 @@ server <- shinyServer(function(input, output) {
         }
       )
 
-  ##analyze PCA-axis loadings ----
+  ##PCA loadings ----
   PCA_loadings <- reactive ({
     
   if(input$PCA_loadings == TRUE){
@@ -839,10 +846,7 @@ server <- shinyServer(function(input, output) {
     PCA_data <- PCA()
     sample.data <-  PCA_data$sample.data
     sample.pca <- PCA_data$sample.pca
-    # Create results directory
-    #dir.create(path=paste(results_folder,"/_PCA_loadings", sep=""))
-    #loading_folder <- paste(results_folder,"/_PCA_loadings", sep="")
-    
+
     ### Calculate loadings
     Loading_analytes <- df_analytes()
     Loading_analytes$R_script <- as.numeric(Loading_analytes$R_script)
@@ -854,9 +858,6 @@ server <- shinyServer(function(input, output) {
     sample.pca.loadings$PC1_rel_loading <- abs(sample.pca.loadings$PC1) *100 /PC1_abs_loadings_summed 
     sample.pca.loadings$PC2_rel_loading <- abs(sample.pca.loadings$PC2) *100 /PC2_abs_loadings_summed 
     sample.pca.loadings$PC_summed_rel_loading <- sqrt((sample.pca.loadings$PC1_rel_loading)^2 + (sample.pca.loadings$PC2_rel_loading)^2)
-    
-    # write export taqble
-   # write.csv(sample.pca.loadings,file=file.path(paste(loading_folder,"/PCA_loadings-table.csv",sep="")),row.names=TRUE)
     
     
     ## Format data for plotting
@@ -901,7 +902,7 @@ server <- shinyServer(function(input, output) {
       l1 <- l1 + geom_text(aes(label= load_labels), vjust = 1, size = input$PCA_label_size)
     }
     ####### set export name as input option
-    Export_name <- "Miau"
+    Export_name <- input$export_name
     
     l1 <- l1 + theme(legend.direction = 'horizontal', legend.position = 'top') 
     l1 <- l1 + theme_bw()
@@ -922,12 +923,6 @@ server <- shinyServer(function(input, output) {
       xlim(-x_limit, x_limit) + ylim(-y_limit, y_limit) + 
       scale_fill_discrete(name = "Contributors \nto loadings", labels = c(Legend_label_top , "Other"))
     
-    
-    #export figures
-  #  ggsave(file=file.path(paste(loading_folder,"/PCA_loadings.emf",sep="")), width = plot_width, height = plot_height, units = c("cm"))
-  # ggsave(file=file.path(paste(loading_folder,"/PCA_loadings.pdf",sep="")), width = plot_width, height = plot_height, units = c("cm"))
-    
-
     ## relative loadings PC1 ----
     ## forrmat data
     plot_rel_loadings_PC1 <- sample.pca.loadings[order(sample.pca.loadings$PC1_rel_loading, decreasing = TRUE), ]
@@ -968,11 +963,7 @@ server <- shinyServer(function(input, output) {
     
     l2 <- l2 + coord_flip() + scale_x_reverse(breaks= c(1:highlight_nr), labels = plot_rel_loadings_PC1$Analyte)
     
-   
-    #export figures
-    #ggsave(file=file.path(paste(loading_folder,"/PC1_relative_loadings.emf",sep="")), width = plot_width, height = plot_height, units = c("cm"))
-    #ggsave(file=file.path(paste(loading_folder,"/PC1_relative_loadings.pdf",sep="")), width = plot_width, height = plot_height, units = c("cm"))
-    
+
     ##relative loadings PC2 ----
     
     ## format data
@@ -1013,33 +1004,34 @@ server <- shinyServer(function(input, output) {
             panel.background = element_rect(fill = input$plot_background), legend.background = element_rect(fill = input$plot_background))#print figure
     
     l3 <- l3 + coord_flip() + scale_x_reverse(breaks= c(1:highlight_nr), labels = plot_rel_loadings_PC2$Analyte)
-    
 
-    #export figures
-   # ggsave(file=file.path(paste(loading_folder,"/PC2_relative_loadings.emf",sep="")), width = plot_width, height = plot_height, units = c("cm"))
-    #ggsave(file=file.path(paste(loading_folder,"/PC2_relative_loadings.pdf",sep="")), width = plot_width, height = plot_height, units = c("cm"))
-    
-    loadings_plots <- list(l1 =l1, l2 = l2, l3 = l3)
+    loadings_plots <- list(l1 =l1, l2 = l2, l3 = l3, sample.pca.loadings = sample.pca.loadings)
     return (loadings_plots)
-    
  }
   })
   
-  ###render loadings plot ----
-  output$loadings_plot1 <- renderPlot(PCA_loadings()$l1)
-  output$loadings_plot2 <- renderPlot(PCA_loadings()$l2)
-  output$loadings_plot3 <- renderPlot(PCA_loadings()$l3)
+  ###render loadings plot and data ----
+  output$PCA_loadings <- renderPlot(PCA_loadings()$l1)
+  output$PC1_relative_loadings <- renderPlot(PCA_loadings()$l2)
+  output$PC2_relative_loadings <- renderPlot(PCA_loadings()$l3)
+  output$PCA_loadings_table  <- DT::renderDataTable(PCA_loadings()$sample.pca.loadings)
 
+  ###download loadings plot and data ----
+  observe({
+    shinyjs::toggle("download_PCA_loadings_df", !is.null(input$data))
+  })
+  
+  output$download_PCA_loadings_df <- downloadHandler(
+    filename = "PCA_loadings.csv",
+    content = function(file) {
+      write.csv(PCA_loadings()$sample.pca.loadings)
+    }
+  )
   
 
-  ## pairwise PCA graphs ----
-  ###Warning: Error in if: missing value where TRUE/FALSE needed MASS::cov.trob
+  ## pairwise PCA  ----
   PCA_pairwise <- reactive({
   if(input$pairwise_pca_plots == TRUE){
-    
-    # make seperate results folder
-   # dir.create(path=paste(getwd(),"/_Results_PCA_data_separation-",Export_name,"/pairwise_pca",sep=""))
-  #  results_folder_pca <- paste(getwd(),"/_Results_PCA_data_separation-",Export_name,"/pairwise_pca",sep="")
     
     data <- df_NA()
     data <- data[, colSums(data != 0) != 0]
@@ -1173,7 +1165,7 @@ server <- shinyServer(function(input, output) {
      # ggsave(file=file.path(paste(results_folder_pca,"/PCA-pairwise_",Group_1,"_vs_",Group_2,".emf",sep="")), width = plot_width, height = plot_height, units = c("cm"))
      #ggsave(file=file.path(paste(results_folder_pca,"/PCA-pairwise_",Group_1,"_vs_",Group_2,".pdf",sep="")), width = plot_width, height = plot_height, units = c("cm"))
       
-      ### get ellipse areas ----
+      ### ellipse areas ----
       if(input$plot_ellipse_area == TRUE){
         # Get ellipse coordinates from plot and add group names
         pb <- ggplot_build(g)
@@ -1210,7 +1202,7 @@ server <- shinyServer(function(input, output) {
           
           results_el[i,] <- c(group_el_i, area_i)
         }
-        ## plot elipse areas in barchart ----
+        ### barchart 
         plot_data_el_area <- results_el
         plot_data_el_area$Area <- as.numeric(plot_data_el_area$Area)
         a <- ggplot(aes(x= Group, y = Area, fill= Group), data= plot_data_el_area)+
@@ -1478,9 +1470,8 @@ server <- shinyServer(function(input, output) {
     
     #######data.scores[[1]][["sites"]] not working::: subscript out of bounds error 
     ######also not working in original script
-    
     data.scores <- list(scores(dats.mds))#Using the scores function from vegan to extract the site scores and convert to a data.frame
-    data.scores <- as.data.frame(data.scores[[1]][["sites"]])
+    data.scores <- as.data.frame(data.scores[[1]])
     plot_data <- cbind(data.scores,meta_data)
     
     grp <- plot_data$Group  #### CHANGE to required grouping plot_data$.....
@@ -1503,7 +1494,7 @@ server <- shinyServer(function(input, output) {
     
     # if centroids to be plotted and if connencting lines between centroids and data points
     if(input$plot_centroid == TRUE){
-      if(plot_centroid_lines == TRUE){
+      if(input$plot_centroid_lines == TRUE){
         p <- p +
           geom_point(aes(x=mean.NMDS1,y=mean.NMDS2),size=input$plot_centroid_size, shape = input$plot_centroid_shape)+
           geom_segment(aes(x=mean.NMDS1, y=mean.NMDS2, xend=NMDS1, yend=NMDS2)) 
@@ -1515,12 +1506,11 @@ server <- shinyServer(function(input, output) {
     
     # if ellipse with user defined type and confidence level should be drawn
     if(input$plot_ellipses == TRUE){
-      p <- p + stat_ellipse(geom = "polygon", alpha = 0.3, level = input$plot_confidence, type = input$ellipses_type)
+      p <- p + stat_ellipse(geom = "polygon", alpha = 0.3, level = input$plot_confidence, type = input$plot_ellipses_type)
     }
     
     p <- p + coord_equal() + 
       theme_bw() + 
-      
       theme(axis.text.x = element_text(colour="Black",size=8,angle=0,hjust=0.5,vjust=0,face="bold"),
             axis.text.y = element_text(colour="black",size=8,angle=0,hjust=1,vjust=0.5,face="bold"),  
             axis.title.x = element_text(colour="Black",size=8,angle=0,hjust=0.5,vjust=-1,face="bold"),
@@ -1534,175 +1524,171 @@ server <- shinyServer(function(input, output) {
       p <- p + theme(panel.grid.minor = element_blank(),panel.grid.major = element_blank())
     } 
     p <- p + guides(fill=guide_legend(title="Sample Group"), colour=guide_legend(title="Sample Group"))
-    p <- p +  ggtitle(paste("NMDS of ",Export_name,"\n ( P-value =",stat_p, "  Stress",round(dats.mds$stress,3),")"))
+    p <- p +  ggtitle(paste("NMDS of ",input$export_name,"\n ( P-value =",stat_p, "  Stress",round(dats.mds$stress,3),")"))
     p <- p + theme(aspect.ratio=1) 
-    
     #if group colours defined
     if(!is.null(input$colors)) {
       p <- p + scale_fill_manual(values= Group_colours) + scale_colour_manual(values= Group_colours)
     }
     
-    
     #if sample labels wanted
-    if(input$label_samples_in_plot == TRUE){
+    if(input$plot_label_samples == TRUE){
       p <- p + geom_text(data=df_connect_p,aes(x=NMDS1,y=NMDS2,label=Sample), size = input$plot_label_size,hjust=0.5, vjust=1.3)
     }
+    print(class(p))
     
     # Stress values >0.2 are generally poor and potentially uninterpretable, whereas values <0.1 are good and <0.05 are excellent
-    
-    print(p)
    # ggsave(file=file.path(paste(results_folder,"/NMDS.emf",sep="")), width = plot_width, height = plot_width, units = c("cm"))
   #  ggsave(file=file.path(paste(results_folder,"/NMDS.pdf",sep="")), width = plot_width, height = plot_width, units = c("cm"))
-    
     return(p)
   })
   ### render NMDS plot ----  
-    output$NMDS <- reactive(NMDS())
-
-  ## pairwise NMDS -----
-  NMDS_pairwise <- reactive({
-    
-    # Do you wish pairwise nmds plots
-    if(input$pairwise_nmds_plots == TRUE){
-      
-      # make seperate results folder
-     # dir.create(path=paste(getwd(),"/_Results_PCA_data_separation-",Export_name,"/pairwise_nmds",sep=""))
-    #  results_folder_nmds <- paste(getwd(),"/_Results_PCA_data_separation-",Export_name,"/pairwise_nmds",sep="")
-      data <- df_NA()
-      data <- data[, colSums(data != 0) != 0]
-      
-      posthoc_permanova <-
-        pairwise.adonis(data[, 3:ncol(data)], data$Group)
-      
-      
-      # Seperate groups
-      library(stringr)
-      posthoc_group_data <- cbind(str_split_fixed(posthoc_permanova$pairs, " vs ", 2),posthoc_permanova)
-      
-      posthoc_group_data[,1] <- as.character(posthoc_group_data[,1])
-      posthoc_group_data[,2] <- as.character(posthoc_group_data[,2])
-      
-      #Start loop for pairwise analysis, figures and export
-      for(i in 1:nrow(posthoc_group_data))
-      {
-        Group_1 <- posthoc_group_data[i,1]
-        Group_2 <- posthoc_group_data[i,2]
-        #subset for the groups in pairwise comparison
-        posthoc_data <- subset(calculation_data, Group %in% c(Group_1,Group_2))
-        #remove zerio columns
-        posthoc_data[is.na(posthoc_data)] <- 0 
-        posthoc_data <- posthoc_data[ , colSums(posthoc_data != 0) != 0]
-        rownames(posthoc_data) <- 1:nrow(posthoc_data)
-        
-        #Grouping data change number of columns as applicable
-        meta_data <- posthoc_data[,1:2]
-        sample <- c(posthoc_data[,1])
-        all_data <- posthoc_data
-        # data for nmds change star column as applicable
-        value_data <- posthoc_data[,3:ncol(posthoc_data)]
-        
-        # number of columns
-        col_nr<- as.numeric(ncol(all_data))
-        
-        #NMDS calculation 
-        dats.mds<-metaMDS(value_data,  distance= Diss_index_method, k=2, autotransform=T, zerodist="add")
-        
-        #Calculate significance CHANGE Column start CHANGE Grouping (raw_data$...)
-        stat_p <- round(as.numeric(posthoc_permanova[i,5]), digits = 5)
-        
-        #Preparing data for plotting
-        data.scores <- list(scores(dats.mds))#Using the scores function from vegan to extract the site scores and convert to a data.frame
-        data.scores <- as.data.frame(data.scores[[1]][["sites"]])
-        plot_data <- cbind(data.scores,meta_data)
-        
-        grp <- plot_data$Group  #### CHANGE to required grouping plot_data$.....
-        data_plot <- cbind(plot_data,grp)
-        data_plot <- data_plot[with(data_plot, order(grp,NMDS1,NMDS2)), ]
-        
-        centroids <- aggregate(cbind(NMDS1,NMDS2)~Group,data_plot,mean)
-        df_connect_p <- merge(data_plot,aggregate(cbind(mean.NMDS1=NMDS1,mean.NMDS2=NMDS2)~Group,data_plot,mean),by="Group")
-        
-        
-        #Plot# PLOT DATA: If fill colour for shape possible add black edge to points
-        if(point_colour_black() == TRUE){
-          p <- ggplot(df_connect_p, aes(x=NMDS1, y=NMDS2, color= Group, fill= Group))+
-            geom_point(aes(fill=Group),size=input$plot_point_size, shape = input$plot_point_shape, colour="Black")
-        }else{
-          p <- ggplot(df_connect_p, aes(x=NMDS1, y=NMDS2, color=Group, fill=Group))+
-            geom_point(aes(fill=Group, colour=Group),size=input$plot_point_size, shape =input$plot_point_shape)
-        }
-        
-        # if centroids to be plotted and if connencting lines between centroids and data points
-        if(input$plot_centroid == TRUE){
-          if(plot_centroid_lines == TRUE){
-            p <- p +
-              geom_point(aes(x=mean.NMDS1,y=mean.NMDS2),size=centroid_size, shape = centroid_shape)+
-              geom_segment(aes(x=mean.NMDS1, y=mean.NMDS2, xend=NMDS1, yend=NMDS2)) 
-          }else{ #Plot only centroids without connecting lines 
-            p <- p + 
-              geom_point(data=centroids, size = input$plot_centroid_size, shape = input$plot_centroid_shape )
-          }
-        }
-        
-        # if ellipse with user defined type and confidence level should be drawn
-        if(input$plot_ellipses == TRUE){
-          p <- p + stat_ellipse(geom = "polygon", alpha = 0.3,level = input$plot_confidence, type = input$ellipses_type)
-        }
-        
-        p <- p + coord_equal() + 
-          theme_bw() + 
-          
-          theme(axis.text.x = element_text(colour="Black",size=8,angle=0,hjust=0.5,vjust=0,face="bold"),
-                axis.text.y = element_text(colour="black",size=8,angle=0,hjust=1,vjust=0.5,face="bold"),  
-                axis.title.x = element_text(colour="Black",size=8,angle=0,hjust=0.5,vjust=-1,face="bold"),
-                axis.title.y = element_text(colour="Black",size=8,angle=90,hjust=0.5,vjust=1,face="bold"),
-                plot.title = element_text(colour="black",size=10,angle=0,hjust=0.5,vjust=2,face="bold"),
-                legend.title = element_text(colour="black",size=8,angle=0,hjust=0,vjust=2,face="bold"),
-                legend.text = element_text(colour="black",size=8,angle=0,hjust=0,vjust=0.5,face="bold"),
-                panel.background = element_rect(fill = input$plot_background), legend.background = element_rect(fill = input$plot_background))
-        ## if grid should be shown in plot
-        if(input$plot_grid == FALSE){
-          p <- p + theme(panel.grid.minor = element_blank(),panel.grid.major = element_blank())
-        } 
-        p <- p + guides(fill=guide_legend(title="Sample Group"), colour=guide_legend(title="Sample Group"))
-        p <- p +  ggtitle(paste("NMDS of ",Export_name,"\n ( P-value =",stat_p, "  Stress",round(dats.mds$stress,3),")"))
-        p <- p + theme(aspect.ratio=1) 
-        
-        #if group colours defined
-        if(point_colour_black() == TRUE){
-          if(!is.null(input$colors)) {
-            p <- p + scale_fill_manual(values= Group_colours) + scale_colour_manual(values= Group_colours)
-          }
-        }else{
-          if(!is.null(input$colors)) {
-            p <- p + scale_fill_manual(values= Group_colours) + scale_colour_manual(values= Group_colours)
-          }
-        }
-        
-        
-        #if sample labels wanted
-        if(input$label_samples_in_plot == TRUE){
-          p <- p + geom_text(data=df_connect_p,aes(x=NMDS1,y=NMDS2,label=Sample), size = label_size,hjust=0.5, vjust=1.3)
-        }
-        
-        # Stress values >0.2 are generally poor and potentially uninterpretable, whereas values <0.1 are good and <0.05 are excellent
-        
-       # print(p)
-       # ggsave(file=file.path(paste(results_folder_nmds,"/NMDS_pairwise_",Group_1,"_vs_",Group_2,".emf",sep="")), width = plot_width, height = plot_width, units = c("cm"))
-      #  ggsave(file=file.path(paste(results_folder_nmds,"/NMDS_pairwise_",Group_1,"_vs_",Group_2,".pdf",sep="")), width = plot_width, height = plot_width, units = c("cm"))
-        
-        #end of For loop
-      }
-      
-      # end of if statement if pairwise nmds plots should be done
-    }
-    return(p)
-  })
-  ### render NMDS pairwise plot ----
-  output$NMDS_pairwise <- renderPlot(NMDS_pairwise())
-  
-  
-  ## statistics Dataframe ----
+    output$NMDS <- renderPlot(NMDS())
+# 
+#   ## pairwise NMDS -----
+#   NMDS_pairwise <- reactive({
+#     
+#     # Do you wish pairwise nmds plots
+#     if(input$pairwise_nmds_plots == TRUE){
+#       
+#       # make seperate results folder
+#      # dir.create(path=paste(getwd(),"/_Results_PCA_data_separation-",Export_name,"/pairwise_nmds",sep=""))
+#     #  results_folder_nmds <- paste(getwd(),"/_Results_PCA_data_separation-",Export_name,"/pairwise_nmds",sep="")
+#       data <- df_NA()
+#       data <- data[, colSums(data != 0) != 0]
+#       
+#       posthoc_permanova <-
+#         pairwise.adonis(data[, 3:ncol(data)], data$Group)
+#       
+#       
+#       # Seperate groups
+#       library(stringr)
+#       posthoc_group_data <- cbind(str_split_fixed(posthoc_permanova$pairs, " vs ", 2),posthoc_permanova)
+#       
+#       posthoc_group_data[,1] <- as.character(posthoc_group_data[,1])
+#       posthoc_group_data[,2] <- as.character(posthoc_group_data[,2])
+#       
+#       #Start loop for pairwise analysis, figures and export
+#       for(i in 1:nrow(posthoc_group_data))
+#       {
+#         Group_1 <- posthoc_group_data[i,1]
+#         Group_2 <- posthoc_group_data[i,2]
+#         #subset for the groups in pairwise comparison
+#         posthoc_data <- subset(calculation_data, Group %in% c(Group_1,Group_2))
+#         #remove zerio columns
+#         posthoc_data[is.na(posthoc_data)] <- 0 
+#         posthoc_data <- posthoc_data[ , colSums(posthoc_data != 0) != 0]
+#         rownames(posthoc_data) <- 1:nrow(posthoc_data)
+#         
+#         #Grouping data change number of columns as applicable
+#         meta_data <- posthoc_data[,1:2]
+#         sample <- c(posthoc_data[,1])
+#         all_data <- posthoc_data
+#         # data for nmds change star column as applicable
+#         value_data <- posthoc_data[,3:ncol(posthoc_data)]
+#         
+#         # number of columns
+#         col_nr<- as.numeric(ncol(all_data))
+#         
+#         #NMDS calculation 
+#         dats.mds<-metaMDS(value_data,  distance= Diss_index_method, k=2, autotransform=T, zerodist="add")
+#         
+#         #Calculate significance CHANGE Column start CHANGE Grouping (raw_data$...)
+#         stat_p <- round(as.numeric(posthoc_permanova[i,5]), digits = 5)
+#         
+#         #Preparing data for plotting
+#         data.scores <- list(scores(dats.mds))#Using the scores function from vegan to extract the site scores and convert to a data.frame
+#         data.scores <- as.data.frame(data.scores[[1]])
+#         plot_data <- cbind(data.scores,meta_data)
+#         
+#         grp <- plot_data$Group  #### CHANGE to required grouping plot_data$.....
+#         data_plot <- cbind(plot_data,grp)
+#         data_plot <- data_plot[with(data_plot, order(grp,NMDS1,NMDS2)), ]
+#         
+#         centroids <- aggregate(cbind(NMDS1,NMDS2)~Group,data_plot,mean)
+#         df_connect_p <- merge(data_plot,aggregate(cbind(mean.NMDS1=NMDS1,mean.NMDS2=NMDS2)~Group,data_plot,mean),by="Group")
+#         
+#         
+#         #Plot# PLOT DATA: If fill colour for shape possible add black edge to points
+#         if(point_colour_black() == TRUE){
+#           p <- ggplot(df_connect_p, aes(x=NMDS1, y=NMDS2, color= Group, fill= Group))+
+#             geom_point(aes(fill=Group),size=input$plot_point_size, shape = input$plot_point_shape, colour="Black")
+#         }else{
+#           p <- ggplot(df_connect_p, aes(x=NMDS1, y=NMDS2, color=Group, fill=Group))+
+#             geom_point(aes(fill=Group, colour=Group),size=input$plot_point_size, shape =input$plot_point_shape)
+#         }
+#         
+#         # if centroids to be plotted and if connencting lines between centroids and data points
+#         if(input$plot_centroid == TRUE){
+#           if(input$plot_centroid_lines == TRUE){
+#             p <- p +
+#               geom_point(aes(x=mean.NMDS1,y=mean.NMDS2),size=centroid_size, shape = centroid_shape)+
+#               geom_segment(aes(x=mean.NMDS1, y=mean.NMDS2, xend=NMDS1, yend=NMDS2)) 
+#           }else{ #Plot only centroids without connecting lines 
+#             p <- p + 
+#               geom_point(data=centroids, size = input$plot_centroid_size, shape = input$plot_centroid_shape )
+#           }
+#         }
+#         
+#         # if ellipse with user defined type and confidence level should be drawn
+#         if(input$plot_ellipses == TRUE){
+#           p <- p + stat_ellipse(geom = "polygon", alpha = 0.3,level = input$plot_confidence, type = input$ellipses_type)
+#         }
+#         
+#         p <- p + coord_equal() + 
+#           theme_bw() + 
+#           
+#           theme(axis.text.x = element_text(colour="Black",size=8,angle=0,hjust=0.5,vjust=0,face="bold"),
+#                 axis.text.y = element_text(colour="black",size=8,angle=0,hjust=1,vjust=0.5,face="bold"),  
+#                 axis.title.x = element_text(colour="Black",size=8,angle=0,hjust=0.5,vjust=-1,face="bold"),
+#                 axis.title.y = element_text(colour="Black",size=8,angle=90,hjust=0.5,vjust=1,face="bold"),
+#                 plot.title = element_text(colour="black",size=10,angle=0,hjust=0.5,vjust=2,face="bold"),
+#                 legend.title = element_text(colour="black",size=8,angle=0,hjust=0,vjust=2,face="bold"),
+#                 legend.text = element_text(colour="black",size=8,angle=0,hjust=0,vjust=0.5,face="bold"),
+#                 panel.background = element_rect(fill = input$plot_background), legend.background = element_rect(fill = input$plot_background))
+#         ## if grid should be shown in plot
+#         if(input$plot_grid == FALSE){
+#           p <- p + theme(panel.grid.minor = element_blank(),panel.grid.major = element_blank())
+#         } 
+#         p <- p + guides(fill=guide_legend(title="Sample Group"), colour=guide_legend(title="Sample Group"))
+#         p <- p +  ggtitle(paste("NMDS of ",Export_name,"\n ( P-value =",stat_p, "  Stress",round(dats.mds$stress,3),")"))
+#         p <- p + theme(aspect.ratio=1) 
+#         
+#         #if group colours defined
+#         if(point_colour_black() == TRUE){
+#           if(!is.null(input$colors)) {
+#             p <- p + scale_fill_manual(values= Group_colours) + scale_colour_manual(values= Group_colours)
+#           }
+#         }else{
+#           if(!is.null(input$colors)) {
+#             p <- p + scale_fill_manual(values= Group_colours) + scale_colour_manual(values= Group_colours)
+#           }
+#         }
+#         
+#         
+#         #if sample labels wanted
+#         if(input$plot_label_samples == TRUE){
+#           p <- p + geom_text(data=df_connect_p,aes(x=NMDS1,y=NMDS2,label=Sample), size = label_size,hjust=0.5, vjust=1.3)
+#         }
+#         
+#         # Stress values >0.2 are generally poor and potentially uninterpretable, whereas values <0.1 are good and <0.05 are excellent
+#         
+#        # print(p)
+#        # ggsave(file=file.path(paste(results_folder_nmds,"/NMDS_pairwise_",Group_1,"_vs_",Group_2,".emf",sep="")), width = plot_width, height = plot_width, units = c("cm"))
+#       #  ggsave(file=file.path(paste(results_folder_nmds,"/NMDS_pairwise_",Group_1,"_vs_",Group_2,".pdf",sep="")), width = plot_width, height = plot_width, units = c("cm"))
+#         
+#         #end of For loop
+#       }
+#       
+#       # end of if statement if pairwise nmds plots should be done
+#     }
+#     return(p)
+#   })
+#   ### render NMDS pairwise plot ----
+#   output$NMDS_pairwise <- renderPlot(NMDS_pairwise())
+#   
+#   
+#Statistics Dataframe ----
   stats <- reactive({
   data <- df_NA()
 
@@ -1765,6 +1751,9 @@ server <- shinyServer(function(input, output) {
     Mean_value<- as.data.frame(Mean_value)
     Count_value <- as.data.frame(Count_value)
     
+    print(length(CV))
+    print(length(SEM))
+    print(length(Mean_value))
     sample_names <- as.character(data_sub[,1])
     
     data_sub_results <- cbind(t(Mean_value),t(SD),SEM,CV,t(Count_value),t(data_sub[3:ncol(data_sub)]))
@@ -1772,8 +1761,9 @@ server <- shinyServer(function(input, output) {
     rownames(data_sub_results) <- colnames(data_sub)[3:ncol(data_sub)]
     
     #Merge data with analyte names 
-    Analyte_mapping <- df_analytes()
-    rownames(Analyte_mapping) <- Analyte_mapping[,1]
+    #Analyte_mapping <- df_analytes()
+    rownames(Analyte_mapping) <- Analyte_mapping[,2]
+    print(length(Analyte_mapping))
     data_sub_results_2 <- merge(Analyte_mapping,data_sub_results, by="row.names")
     data_sub_results_final <- data_sub_results_2[,3:ncol(data_sub_results_2)]
     
@@ -1809,7 +1799,6 @@ server <- shinyServer(function(input, output) {
   colnames(settings_data) <- c("Parameters", "Settings")
   
   # export settings
-  #write.csv(settings_data,file=file.path(paste(results_folder,sep="",paste("/R_script-2_settings-",Export_name,".csv",sep=""))),row.names=FALSE)
   stats_df <- list(settings_data = settings_data, data_sub_results_final = data_sub_results_final, data_sub_results_2 = data_sub_results_2)
   
   return(stats_df)
